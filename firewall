@@ -1,0 +1,3 @@
+#protocol port   interface
+tcp       22     
+udp       3192   eth0
