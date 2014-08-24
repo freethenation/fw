@@ -1,0 +1,63 @@
+#!/bin/bash
+if [ "$EUID" -ne 0 ]
+  then echo "Got to run as root"
+  exit 1
+fi
+
+ABSOLUTE_PATH=$(cd `dirname "${BASH_SOURCE[0]}"` && pwd)'/'
+if [ -z "$IPTABLES" ]; then
+  #stop firewall
+  bash $ABSOLUTE_PATH/firewall-stop
+  #run for ip6tables
+  #echo "starting ipv6 firewall..."
+  #export IPTABLES=$(which ip6tables)
+  #bash $ABSOLUTE_PATH/firewall-start
+  #run for iptables
+  echo "starting ipv4 firewall..."
+  IPV4=true
+  IPTABLES=$(which iptables)
+fi
+
+#Set default policies
+$IPTABLES --policy INPUT DROP
+$IPTABLES --policy OUTPUT ACCEPT
+$IPTABLES --policy FORWARD DROP
+
+$IPTABLES -A INPUT -p icmp -j ACCEPT #Allow ping
+$IPTABLES -A INPUT -i lo -j ACCEPT #Allow loopback
+$IPTABLES -A OUTPUT -o lo -j ACCEPT #Allow loopback
+#Allow all incoming on established connections
+$IPTABLES -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+#Apply firewall
+cat firewall.config | grep --invert-match "#" | awk '{  \
+  rule = " --protocol " $1 " --dport " $2;              \
+  if ($3 != "") rule = rule " --in-interface " $3;      \
+  print rule " -A INPUT -j ACCEPT";                     \
+}' | xargs -L1 sudo $IPTABLES
+
+#Apply ip forwarding (DNAT)
+if [[ -n "$IPV4" ]]; then
+  cat port-forward.config | grep --invert-match "#" | awk '{        \
+    rule = " -t nat -A PREROUTING --protocol " $1 " --dport " $2;   \
+    if ($5 != "") rule = rule " --in-interface " $5;                \
+    print rule " -j DNAT --to-destination " $3 ":" $4;
+    print " -A FORWARD --protocol " $1 " --dport " $4 " --destination " $3 " -j ACCEPT";  \
+    print " -t nat -A POSTROUTING -j MASQUERADE --source " $3       \
+  }' | xargs -L1 sudo iptables
+fi
+
+#Allow LXC containers to use this box for DNS
+$IPTABLES -A INPUT -p udp --dport 53 -i lxcbr0 -j ACCEPT
+#Allow LXC containers to use this box for DHCP
+$IPTABLES -A INPUT -p udp --dport 67 -i lxcbr0 -j ACCEPT
+#Some bullshit to fix DHCP bug
+$IPTABLES -t mangle -A POSTROUTING -o lxcbr0 -p udp -m udp --dport 68 -j CHECKSUM --checksum-fill
+#Allow fowarding to lxc containers
+$IPTABLES -A FORWARD -o lxcbr0 -j ACCEPT
+$IPTABLES -A FORWARD -i lxcbr0 -j ACCEPT
+
+#iptables -N LOGGING
+#iptables -A INPUT -j LOGGING
+#iptables -A LOGGING -m limit --limit 20/min -j LOG --log-prefix "IPTables-Dropped: " --log-level 4
+#iptables -A LOGGING -j DROP
