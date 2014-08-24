@@ -30,20 +30,20 @@ $IPTABLES -A OUTPUT -o lo -j ACCEPT #Allow loopback
 $IPTABLES -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 
 #Apply firewall
-cat firewall.config | grep --invert-match "#" | awk '{  \
-  rule = " --protocol " $1 " --dport " $2;              \
-  if ($3 != "") rule = rule " --in-interface " $3;      \
-  print rule " -A INPUT -j ACCEPT";                     \
+cat firewall.config | grep --invert-match "#" | awk '{
+  rule = " --protocol " $1 " --dport " $2;
+  if ($3 != "") rule = rule " --in-interface " $3;
+  print rule " -A INPUT -j ACCEPT";
 }' | xargs -L1 sudo $IPTABLES
 
 #Apply ip forwarding (DNAT)
 if [[ -n "$IPV4" ]]; then
-  cat port-forward.config | grep --invert-match "#" | awk '{        \
-    rule = " -t nat -A PREROUTING --protocol " $1 " --dport " $2;   \
-    if ($5 != "") rule = rule " --in-interface " $5;                \
+  cat port-forward.config | grep --invert-match "#" | awk '{        
+    rule = " -t nat -A PREROUTING --protocol " $1 " --dport " $2;
+    if ($5 != "") rule = rule " --in-interface " $5;
     print rule " -j DNAT --to-destination " $3 ":" $4;
-    print " -A FORWARD --protocol " $1 " --dport " $4 " --destination " $3 " -j ACCEPT";  \
-    print " -t nat -A POSTROUTING -j MASQUERADE --source " $3       \
+    print " -A FORWARD --protocol " $1 " --dport " $4 " --destination " $3 " -j ACCEPT";
+    print " -t nat -A POSTROUTING -j MASQUERADE --source " $3
   }' | xargs -L1 sudo iptables
 fi
 
