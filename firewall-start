@@ -9,11 +9,11 @@ if [ -z "$IPTABLES" ]; then
   #stop firewall
   bash $ABSOLUTE_PATH/firewall-stop
   #run for ip6tables
-  echo "starting ipv6 firewall..."
+  echo "Starting ipv6 firewall..."
   export IPTABLES=$(which ip6tables)
   bash $ABSOLUTE_PATH/firewall-start
   #run for iptables
-  echo "starting ipv4 firewall..."
+  echo "Starting ipv4 firewall..."
   IPV4=true
   IPTABLES=$(which iptables)
 fi
