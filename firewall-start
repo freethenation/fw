@@ -38,7 +38,7 @@ cat firewall.config | grep --invert-match "#" | awk '{
 
 #Apply ip forwarding (DNAT)
 if [[ -n "$IPV4" ]]; then
-  cat port-forward.config | grep --invert-match "#" | awk '{        
+  cat port-forward.config | grep --invert-match "#" | awk '{
     rule = " -t nat -A PREROUTING --protocol " $1 " --dport " $2;
     if ($5 != "") rule = rule " --in-interface " $5;
     print rule " -j DNAT --to-destination " $3 ":" $4;
