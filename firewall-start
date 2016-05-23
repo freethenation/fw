@@ -3,6 +3,7 @@ if [ "$EUID" -ne 0 ]
   then echo "Got to run as root"
   exit 1
 fi
+cd $(dirname $0)
 
 ABSOLUTE_PATH=$(cd `dirname "${BASH_SOURCE[0]}"` && pwd)'/'
 if [ -z "$IPTABLES" ]; then
@@ -54,10 +55,15 @@ $IPTABLES -A INPUT -p udp --dport 67 -i lxcbr0 -j ACCEPT
 #Some bullshit to fix DHCP bug
 $IPTABLES -t mangle -A POSTROUTING -o lxcbr0 -p udp -m udp --dport 68 -j CHECKSUM --checksum-fill
 #Allow fowarding to lxc containers
-$IPTABLES -A FORWARD -o lxcbr0 -j ACCEPT
-$IPTABLES -A FORWARD -i lxcbr0 -j ACCEPT
+$IPTABLES -A FORWARD -o lxcbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+$IPTABLES -A FORWARD -i lxcbr0 ! -o docker0 -j ACCEPT
+$IPTABLES -A FORWARD -i lxcbr0 -o docker0 -j ACCEPT
+#Allow fowarding to docker containers
+$IPTABLES -A FORWARD -o docker0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+$IPTABLES -A FORWARD -i docker0 ! -o docker0 -j ACCEPT
+$IPTABLES -A FORWARD -i docker0 -o docker0 -j ACCEPT
 
 #iptables -N LOGGING
-#iptables -A INPUT -j LOGGING
-#iptables -A LOGGING -m limit --limit 20/min -j LOG --log-prefix "IPTables-Dropped: " --log-level 4
+#iptables -A FORWARD -j LOGGING
+#$IPTABLES -A FORWARD -m limit --limit 20/min -j LOG --log-prefix "IPTables-Dropped: " --log-level 4
 #iptables -A LOGGING -j DROP
