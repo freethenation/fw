@@ -56,12 +56,10 @@ $IPTABLES -A INPUT -p udp --dport 67 -i lxcbr0 -j ACCEPT
 $IPTABLES -t mangle -A POSTROUTING -o lxcbr0 -p udp -m udp --dport 68 -j CHECKSUM --checksum-fill
 #Allow fowarding to lxc containers
 $IPTABLES -A FORWARD -o lxcbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-$IPTABLES -A FORWARD -i lxcbr0 ! -o docker0 -j ACCEPT
-$IPTABLES -A FORWARD -i lxcbr0 -o docker0 -j ACCEPT
+$IPTABLES -A FORWARD -i lxcbr0 -j ACCEPT
 #Allow fowarding to docker containers
 $IPTABLES -A FORWARD -o docker0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-$IPTABLES -A FORWARD -i docker0 ! -o docker0 -j ACCEPT
-$IPTABLES -A FORWARD -i docker0 -o docker0 -j ACCEPT
+$IPTABLES -A FORWARD -i docker0 -j ACCEPT
 
 #iptables -N LOGGING
 #iptables -A FORWARD -j LOGGING
