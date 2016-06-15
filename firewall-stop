@@ -3,23 +3,32 @@ if [ "$EUID" -ne 0 ]
   then echo "Got to run as root"
   exit 1
 fi
-echo "Stopping firewall..."
-iptables -F
-iptables -X
-iptables -t nat -F
-iptables -t nat -X
-iptables -t mangle -F
-iptables -t mangle -X
-iptables -P INPUT ACCEPT
-iptables -P FORWARD ACCEPT
-iptables -P OUTPUT ACCEPT
 
-ip6tables -F
-ip6tables -X
-ip6tables -t nat -F
-ip6tables -t nat -X
-ip6tables -t mangle -F
-ip6tables -t mangle -X
-ip6tables -P INPUT ACCEPT
-ip6tables -P FORWARD ACCEPT
-ip6tables -P OUTPUT ACCEPT
+ABSOLUTE_PATH=$(cd `dirname "${BASH_SOURCE[0]}"` && pwd)'/'
+if [ -z "$IPTABLES" ]; then
+  #run for ip6tables
+  echo "Stopping ipv6 firewall..."
+  export IPTABLES=$(which ip6tables)
+  bash $ABSOLUTE_PATH/firewall-stop
+
+  #run for iptables
+  echo "Stopping ipv4 firewall..."
+  IPV4=true
+  IPTABLES=$(which iptables)
+fi
+
+$IPTABLES -t mangle --delete POSTROUTING -j rfw-mangle-postrouting || true >/dev/null 2>&1
+$IPTABLES -t mangle --flush rfw-mangle-postrouting || true >/dev/null 2>&1
+$IPTABLES -t mangle --delete-chain rfw-mangle-postrouting || true >/dev/null 2>&1
+$IPTABLES -t nat --delete PREROUTING -j rfw-nat-prerouting || true >/dev/null 2>&1
+$IPTABLES -t nat --flush rfw-nat-prerouting || true >/dev/null 2>&1
+$IPTABLES -t nat --delete-chain rfw-nat-prerouting || true >/dev/null 2>&1
+$IPTABLES -t nat --delete POSTROUTING -j rfw-nat-postrouting || true >/dev/null 2>&1
+$IPTABLES -t nat --flush rfw-nat-postrouting || true >/dev/null 2>&1
+$IPTABLES -t nat --delete-chain rfw-nat-postrouting || true >/dev/null 2>&1
+$IPTABLES -t filter --delete INPUT -j rfw-filter-input || true >/dev/null 2>&1
+$IPTABLES -t filter --flush rfw-filter-input || true >/dev/null 2>&1
+$IPTABLES -t filter --delete-chain rfw-filter-input || true >/dev/null 2>&1
+$IPTABLES -t filter --delete FORWARD -j rfw-filter-forward || true >/dev/null 2>&1
+$IPTABLES -t filter --flush rfw-filter-forward || true >/dev/null 2>&1
+$IPTABLES -t filter --delete-chain rfw-filter-forward || true >/dev/null 2>&1
