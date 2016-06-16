@@ -1,69 +1,127 @@
 #!/bin/bash
+# ourfirewall - see README.md for uses and examples
+
+# Ensure that we're running as root
+set -e
 if [ "$EUID" -ne 0 ]
   then echo "Got to run as root"
   exit 1
 fi
 cd $(dirname $0)
 
+parse_dspec() {
+  # Take the DTYPE and DSPEC from a given config row and return the IP and IFACE
+  # Valid DTYPEs are "docker", "lxc", or any interface (e.g. "eth0")
+  # Valid DSPECs are the name of a docker/lxc container or an IPv4 or IPv6 address
+  # If this config row is not applicable for the current operating mode (IPv4 or not?),
+  # return the empty string.
+  DTYPE=$1
+  DSPEC=$2
+  if [ "$DTYPE" == 'lxc' ]; then
+    IFACE='lxcbr0'
+    if [ "$IPV4" == 'true' ]; then
+      IP=$(lxc-info -n $DSPEC -iH | grep -v : | head -1 || true)
+    else
+      IP=$(lxc-info -n $DSPEC -iH | grep : | head -1 || true)
+    fi
+  elif [ "$DTYPE" == 'docker'  ]; then
+    IFACE='docker0'
+    if [ "$IPV4" == 'true' ]; then
+      IP=$(docker inspect --format '{{ .NetworkSettings.IPAddress }}' $DSPEC || true)
+    else
+      IP=$(docker inspect --format '{{ .NetworkSettings.GlobalIPv6Address }}' $DSPEC || true)
+    fi
+  else
+    IFACE=$DTYPE
+    IP=$DSPEC
+    if grep ':' <<< "$IP" > /dev/null; then   # IPv6
+      [ "$IPV4" == 'true' ] && return 0 || true
+    else
+      [ "$IPV4" == 'true' ] || return 0 || true
+    fi
+  fi
+
+  # Return nothing if there is no IP (e.g. no IPv6 for container)
+  if [ -n "$IP" ]; then
+    echo "$IP" "$IFACE"
+  fi
+}
+
+# If run with IPTABLES undefined, run twice, once for IPv6, then once for IPv4
 ABSOLUTE_PATH=$(cd `dirname "${BASH_SOURCE[0]}"` && pwd)'/'
 if [ -z "$IPTABLES" ]; then
   #stop firewall
   bash $ABSOLUTE_PATH/firewall-stop
+
   #run for ip6tables
   echo "Starting ipv6 firewall..."
   export IPTABLES=$(which ip6tables)
   bash $ABSOLUTE_PATH/firewall-start
+
   #run for iptables
   echo "Starting ipv4 firewall..."
   IPV4=true
   IPTABLES=$(which iptables)
 fi
 
-#Set default policies
-$IPTABLES --policy INPUT DROP
-$IPTABLES --policy OUTPUT ACCEPT
-$IPTABLES --policy FORWARD DROP
+# Create new chains
+$IPTABLES -t mangle -N rfw-mangle-postrouting
+$IPTABLES -t mangle --insert POSTROUTING -j rfw-mangle-postrouting
+$IPTABLES -t nat -N rfw-nat-prerouting
+$IPTABLES -t nat --insert PREROUTING -j rfw-nat-prerouting
+$IPTABLES -t nat -N rfw-nat-postrouting
+$IPTABLES -t nat --insert POSTROUTING -j rfw-nat-postrouting
+$IPTABLES -t filter -N rfw-filter-input
+$IPTABLES -t filter --insert INPUT -j rfw-filter-input
+$IPTABLES -t filter -N rfw-filter-forward
+$IPTABLES -t filter --insert FORWARD -j rfw-filter-forward
 
-$IPTABLES -A INPUT -p icmp -j ACCEPT #Allow ping
-$IPTABLES -A INPUT -i lo -j ACCEPT #Allow loopback
-$IPTABLES -A OUTPUT -o lo -j ACCEPT #Allow loopback
-#Allow all incoming on established connections
-$IPTABLES -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+#Allow LXC containers to use this box for DNS / DHCP (LXC compat)
+$IPTABLES -t filter -A rfw-filter-input -p udp --dport 53 -i lxcbr0 -j ACCEPT
+$IPTABLES -t filter -A rfw-filter-input -p udp --dport 67 -i lxcbr0 -j ACCEPT
+#Some bullshit to fix DHCP bug (https://github.com/fgrehm/vagrant-lxc/issues/153)
+$IPTABLES -t mangle -A rfw-mangle-postrouting -o lxcbr0 -p udp -m udp --dport 68 -j CHECKSUM --checksum-fill
 
-#Apply firewall
-cat firewall.config | grep --invert-match "#" | awk '{
-  rule = " --protocol " $1 " --dport " $2;
-  if ($3 != "") rule = rule " --in-interface " $3;
-  print rule " -A INPUT -j ACCEPT";
-}' | xargs -L1 sudo $IPTABLES
+# Parse the configuration file
+OLDIFS=$IFS;
+IFS=$'\n';
+for ROW in $(grep -v '^\s*#' forward.config); do
+  IFS=$OLDIFS
 
-#Apply ip forwarding (DNAT)
-if [[ -n "$IPV4" ]]; then
-  cat port-forward.config | grep --invert-match "#" | awk '{
-    rule = " -t nat -A PREROUTING --protocol " $1 " --dport " $2;
-    if ($5 != "") rule = rule " --in-interface " $5;
-    print rule " -j DNAT --to-destination " $3 ":" $4;
-    print " -A FORWARD --protocol " $1 " --dport " $4 " --destination " $3 " -j ACCEPT";
-    print " -t nat -A POSTROUTING -j MASQUERADE --source " $3
-  }' | xargs -L1 sudo iptables
-fi
+  ROW=$(echo "$ROW" | tr -d '\n')
+  [ -z "$ROW" ] && continue || true
 
-#Allow LXC containers to use this box for DNS
-$IPTABLES -A INPUT -p udp --dport 53 -i lxcbr0 -j ACCEPT
-#Allow LXC containers to use this box for DHCP
-$IPTABLES -A INPUT -p udp --dport 67 -i lxcbr0 -j ACCEPT
-#Some bullshit to fix DHCP bug
-$IPTABLES -t mangle -A POSTROUTING -o lxcbr0 -p udp -m udp --dport 68 -j CHECKSUM --checksum-fill
-#Allow fowarding to lxc containers
-$IPTABLES -A FORWARD -o lxcbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-$IPTABLES -A FORWARD -i lxcbr0 ! -o docker0 -j ACCEPT
-$IPTABLES -A FORWARD -i lxcbr0 -o docker0 -j ACCEPT
-#Allow fowarding to docker containers
-$IPTABLES -A FORWARD -o docker0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-$IPTABLES -A FORWARD -i docker0 ! -o docker0 -j ACCEPT
-$IPTABLES -A FORWARD -i docker0 -o docker0 -j ACCEPT
+  COL=( $ROW )
 
-#iptables -N LOGGING
-#iptables -A FORWARD -j LOGGING
-#$IPTABLES -A FORWARD -m limit --limit 20/min -j LOG --log-prefix "IPTables-Dropped: " --log-level 4
-#iptables -A LOGGING -j DROP
+  DTYPE=${COL[0]}
+  DSPEC=${COL[1]}
+  PROTO=${COL[2]}
+  PORT=${COL[3]}
+  DPORT=${COL[4]}
+
+  PARTS=$(parse_dspec $DTYPE $DSPEC)
+  [ -z "$PARTS" ] && continue || true  # skip anything that doesn't apply
+  COL=( $PARTS )
+  IP=${COL[0]}
+  DIFACE=${COL[1]}
+
+  if [ -n "$PROTO" ]; then
+    # Forward traffic from PORT to DPORT on the container
+    $IPTABLES -t nat -A rfw-nat-prerouting --protocol $PROTO --dport $PORT -j DNAT --to-destination $IP:$DPORT
+    $IPTABLES -t filter -A rfw-filter-forward --protocol $PROTO --dport $DPORT --destination $IP -j ACCEPT
+
+    # Enable localhost-routing to the container's ports (--src-type LOCAL is similar to -s 127.0.0.0/8)
+    # TODO(lachesis): This still doesn't work :(
+    $IPTABLES -t nat -A rfw-nat-postrouting -m addrtype --src-type LOCAL --destination $IP --proto $PROTO --dport $DPORT -j MASQUERADE
+  fi
+
+  # Perform NAT for a container
+  $IPTABLES -t nat -A rfw-nat-postrouting --source $IP -j MASQUERADE
+  $IPTABLES -t filter -A rfw-filter-forward -o $DIFACE --destination $IP -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+  $IPTABLES -t filter -A rfw-filter-forward -i $DIFACE --source $IP -j ACCEPT
+
+  IFS=$'\n';
+done
+IFS=$OLDIFS
+
+echo "It definitely worked."

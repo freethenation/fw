@@ -1,25 +1,46 @@
 #!/bin/bash
+set -e
+
 if [ "$EUID" -ne 0 ]
   then echo "Got to run as root"
   exit 1
 fi
-echo "Stopping firewall..."
-iptables -F
-iptables -X
-iptables -t nat -F
-iptables -t nat -X
-iptables -t mangle -F
-iptables -t mangle -X
-iptables -P INPUT ACCEPT
-iptables -P FORWARD ACCEPT
-iptables -P OUTPUT ACCEPT
 
-ip6tables -F
-ip6tables -X
-ip6tables -t nat -F
-ip6tables -t nat -X
-ip6tables -t mangle -F
-ip6tables -t mangle -X
-ip6tables -P INPUT ACCEPT
-ip6tables -P FORWARD ACCEPT
-ip6tables -P OUTPUT ACCEPT
+ABSOLUTE_PATH=$(cd `dirname "${BASH_SOURCE[0]}"` && pwd)'/'
+if [ -z "$IPTABLES" ]; then
+  #run for ip6tables
+  echo "Stopping ipv6 firewall..."
+  export IPTABLES=$(which ip6tables)
+  bash $ABSOLUTE_PATH/firewall-stop
+
+  #run for iptables
+  echo "Stopping ipv4 firewall..."
+  IPV4=true
+  IPTABLES=$(which iptables)
+fi
+
+delete_chain() {
+  CHAIN="$1"
+
+  # Split input chain into three parts
+  IFS='-' read -r rfw table base_chain <<< "$CHAIN"
+
+  # base_chain should always be upper case
+  base_chain=$(tr '[:lower:]' '[:upper:]' <<<"$base_chain")
+
+  # Delete the jump rule in the main chain that points to this chain
+  $IPTABLES -t $table --delete $base_chain -j $CHAIN >/dev/null 2>&1 || true
+
+  # Delete all rules in this chain
+  $IPTABLES -t $table --flush $CHAIN >/dev/null 2>&1 || true
+
+  # Delete this chain
+  $IPTABLES -t $table --delete-chain $CHAIN >/dev/null 2>&1 || true 
+}
+
+# Clean up all of our chains
+delete_chain rfw-mangle-postrouting
+delete_chain rfw-nat-prerouting
+delete_chain rfw-nat-postrouting
+delete_chain rfw-filter-input
+delete_chain rfw-filter-forward
