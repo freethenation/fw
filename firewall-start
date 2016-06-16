@@ -1,4 +1,7 @@
 #!/bin/bash
+# ourfirewall - see README.md for uses and examples
+
+# Ensure that we're running as root
 set -e
 if [ "$EUID" -ne 0 ]
   then echo "Got to run as root"
@@ -6,41 +9,12 @@ if [ "$EUID" -ne 0 ]
 fi
 cd $(dirname $0)
 
-ABSOLUTE_PATH=$(cd `dirname "${BASH_SOURCE[0]}"` && pwd)'/'
-if [ -z "$IPTABLES" ]; then
-  #stop firewall
-  bash $ABSOLUTE_PATH/firewall-stop
-
-  #run for ip6tables
-  echo "Starting ipv6 firewall..."
-  export IPTABLES=$(which ip6tables)
-  bash $ABSOLUTE_PATH/firewall-start
-
-  #run for iptables
-  echo "Starting ipv4 firewall..."
-  IPV4=true
-  IPTABLES=$(which iptables)
-fi
-
-# Create new chains
-$IPTABLES -t mangle -N rfw-mangle-postrouting
-$IPTABLES -t mangle --insert POSTROUTING -j rfw-mangle-postrouting
-$IPTABLES -t nat -N rfw-nat-prerouting
-$IPTABLES -t nat --insert PREROUTING -j rfw-nat-prerouting
-$IPTABLES -t nat -N rfw-nat-postrouting
-$IPTABLES -t nat --insert POSTROUTING -j rfw-nat-postrouting
-$IPTABLES -t filter -N rfw-filter-input
-$IPTABLES -t filter --insert INPUT -j rfw-filter-input
-$IPTABLES -t filter -N rfw-filter-forward
-$IPTABLES -t filter --insert FORWARD -j rfw-filter-forward
-
-#Allow LXC containers to use this box for DNS / DHCP (LXC compat)
-$IPTABLES -t filter -A rfw-filter-input -p udp --dport 53 -i lxcbr0 -j ACCEPT
-$IPTABLES -t filter -A rfw-filter-input -p udp --dport 67 -i lxcbr0 -j ACCEPT
-#Some bullshit to fix DHCP bug
-$IPTABLES -t mangle -A rfw-mangle-postrouting -o lxcbr0 -p udp -m udp --dport 68 -j CHECKSUM --checksum-fill
-
-magic_func() {
+parse_dspec() {
+  # Take the DTYPE and DSPEC from a given config row and return the IP and IFACE
+  # Valid DTYPEs are "docker", "lxc", or any interface (e.g. "eth0")
+  # Valid DSPECs are the name of a docker/lxc container or an IPv4 or IPv6 address
+  # If this config row is not applicable for the current operating mode (IPv4 or not?),
+  # return the empty string.
   DTYPE=$1
   DSPEC=$2
   if [ "$DTYPE" == 'lxc' ]; then
@@ -73,7 +47,42 @@ magic_func() {
   fi
 }
 
+# If run with IPTABLES undefined, run twice, once for IPv6, then once for IPv4
+ABSOLUTE_PATH=$(cd `dirname "${BASH_SOURCE[0]}"` && pwd)'/'
+if [ -z "$IPTABLES" ]; then
+  #stop firewall
+  bash $ABSOLUTE_PATH/firewall-stop
 
+  #run for ip6tables
+  echo "Starting ipv6 firewall..."
+  export IPTABLES=$(which ip6tables)
+  bash $ABSOLUTE_PATH/firewall-start
+
+  #run for iptables
+  echo "Starting ipv4 firewall..."
+  IPV4=true
+  IPTABLES=$(which iptables)
+fi
+
+# Create new chains
+$IPTABLES -t mangle -N rfw-mangle-postrouting
+$IPTABLES -t mangle --insert POSTROUTING -j rfw-mangle-postrouting
+$IPTABLES -t nat -N rfw-nat-prerouting
+$IPTABLES -t nat --insert PREROUTING -j rfw-nat-prerouting
+$IPTABLES -t nat -N rfw-nat-postrouting
+$IPTABLES -t nat --insert POSTROUTING -j rfw-nat-postrouting
+$IPTABLES -t filter -N rfw-filter-input
+$IPTABLES -t filter --insert INPUT -j rfw-filter-input
+$IPTABLES -t filter -N rfw-filter-forward
+$IPTABLES -t filter --insert FORWARD -j rfw-filter-forward
+
+#Allow LXC containers to use this box for DNS / DHCP (LXC compat)
+$IPTABLES -t filter -A rfw-filter-input -p udp --dport 53 -i lxcbr0 -j ACCEPT
+$IPTABLES -t filter -A rfw-filter-input -p udp --dport 67 -i lxcbr0 -j ACCEPT
+#Some bullshit to fix DHCP bug (https://github.com/fgrehm/vagrant-lxc/issues/153)
+$IPTABLES -t mangle -A rfw-mangle-postrouting -o lxcbr0 -p udp -m udp --dport 68 -j CHECKSUM --checksum-fill
+
+# Parse the configuration file
 OLDIFS=$IFS;
 IFS=$'\n';
 for ROW in $(grep -v '^\s*#' forward.config); do
@@ -84,24 +93,29 @@ for ROW in $(grep -v '^\s*#' forward.config); do
 
   COL=( $ROW )
 
-  PROTO=${COL[0]}
-  PORT=${COL[1]}
-  DTYPE=${COL[2]}
-  DSPEC=${COL[3]}
+  DTYPE=${COL[0]}
+  DSPEC=${COL[1]}
+  PROTO=${COL[2]}
+  PORT=${COL[3]}
   DPORT=${COL[4]}
 
-  PARTS=$(magic_func $DTYPE $DSPEC)
+  PARTS=$(parse_dspec $DTYPE $DSPEC)
   [ -z "$PARTS" ] && continue || true  # skip anything that doesn't apply
   COL=( $PARTS )
   IP=${COL[0]}
   DIFACE=${COL[1]}
-  
-  # Actual iptables rules
-  $IPTABLES -t nat -A rfw-nat-prerouting --protocol $PROTO --dport $PORT -j DNAT --to-destination $IP:$DPORT
-  $IPTABLES -t filter -A rfw-filter-forward --protocol $PROTO --dport $DPORT --destination $IP -j ACCEPT
 
-  # Perform NAT for a container/whatever (-i $DIFACE on NAT might not work)
-  $IPTABLES -t nat -A rfw-nat-postrouting -j MASQUERADE --source $IP
+  if [ -n "$PROTO" ]; then
+    # Forward traffic from PORT to DPORT on the container
+    $IPTABLES -t nat -A rfw-nat-prerouting --protocol $PROTO --dport $PORT -j DNAT --to-destination $IP:$DPORT
+    $IPTABLES -t filter -A rfw-filter-forward --protocol $PROTO --dport $DPORT --destination $IP -j ACCEPT
+
+    # Enable localhost-routing to the container's ports (--src-type LOCAL is similar to -s 127.0.0.0/8)
+    $IPTABLES -t nat -A rfw-nat-postrouting -m addrtype --src-type LOCAL --destination $IP --proto $PROTO --dport $DPORT -j MASQUERADE
+  fi
+
+  # Perform NAT for a container
+  $IPTABLES -t nat -A rfw-nat-postrouting --source $IP -j MASQUERADE
   $IPTABLES -t filter -A rfw-filter-forward -o $DIFACE --destination $IP -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
   $IPTABLES -t filter -A rfw-filter-forward -i $DIFACE --source $IP -j ACCEPT
 
@@ -110,8 +124,3 @@ done
 IFS=$OLDIFS
 
 echo "It definitely worked."
-
-# protocol  port  dtype       dspec         dport
-# tcp       8080  docker      grafana       80
-# tcp       3192  lxc         blah          22
-# tcp       1234  eth0        10.0.3.1      123

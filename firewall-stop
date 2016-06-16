@@ -1,4 +1,6 @@
 #!/bin/bash
+set -e
+
 if [ "$EUID" -ne 0 ]
   then echo "Got to run as root"
   exit 1
@@ -17,18 +19,28 @@ if [ -z "$IPTABLES" ]; then
   IPTABLES=$(which iptables)
 fi
 
-$IPTABLES -t mangle --delete POSTROUTING -j rfw-mangle-postrouting || true >/dev/null 2>&1
-$IPTABLES -t mangle --flush rfw-mangle-postrouting || true >/dev/null 2>&1
-$IPTABLES -t mangle --delete-chain rfw-mangle-postrouting || true >/dev/null 2>&1
-$IPTABLES -t nat --delete PREROUTING -j rfw-nat-prerouting || true >/dev/null 2>&1
-$IPTABLES -t nat --flush rfw-nat-prerouting || true >/dev/null 2>&1
-$IPTABLES -t nat --delete-chain rfw-nat-prerouting || true >/dev/null 2>&1
-$IPTABLES -t nat --delete POSTROUTING -j rfw-nat-postrouting || true >/dev/null 2>&1
-$IPTABLES -t nat --flush rfw-nat-postrouting || true >/dev/null 2>&1
-$IPTABLES -t nat --delete-chain rfw-nat-postrouting || true >/dev/null 2>&1
-$IPTABLES -t filter --delete INPUT -j rfw-filter-input || true >/dev/null 2>&1
-$IPTABLES -t filter --flush rfw-filter-input || true >/dev/null 2>&1
-$IPTABLES -t filter --delete-chain rfw-filter-input || true >/dev/null 2>&1
-$IPTABLES -t filter --delete FORWARD -j rfw-filter-forward || true >/dev/null 2>&1
-$IPTABLES -t filter --flush rfw-filter-forward || true >/dev/null 2>&1
-$IPTABLES -t filter --delete-chain rfw-filter-forward || true >/dev/null 2>&1
+delete_chain() {
+  CHAIN="$1"
+
+  # Split input chain into three parts
+  IFS='-' read -r rfw table base_chain <<< "$CHAIN"
+
+  # base_chain should always be upper case
+  base_chain=$(tr '[:lower:]' '[:upper:]' <<<"$base_chain")
+
+  # Delete the jump rule in the main chain that points to this chain
+  $IPTABLES -t $table --delete $base_chain -j $CHAIN >/dev/null 2>&1 || true
+
+  # Delete all rules in this chain
+  $IPTABLES -t $table --flush $CHAIN >/dev/null 2>&1 || true
+
+  # Delete this chain
+  $IPTABLES -t $table --delete-chain $CHAIN >/dev/null 2>&1 || true 
+}
+
+# Clean up all of our chains
+delete_chain rfw-mangle-postrouting
+delete_chain rfw-nat-prerouting
+delete_chain rfw-nat-postrouting
+delete_chain rfw-filter-input
+delete_chain rfw-filter-forward
