@@ -111,6 +111,7 @@ for ROW in $(grep -v '^\s*#' forward.config); do
     $IPTABLES -t filter -A rfw-filter-forward --protocol $PROTO --dport $DPORT --destination $IP -j ACCEPT
 
     # Enable localhost-routing to the container's ports (--src-type LOCAL is similar to -s 127.0.0.0/8)
+    # TODO(lachesis): This still doesn't work :(
     $IPTABLES -t nat -A rfw-nat-postrouting -m addrtype --src-type LOCAL --destination $IP --proto $PROTO --dport $DPORT -j MASQUERADE
   fi
 
